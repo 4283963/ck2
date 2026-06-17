@@ -5,11 +5,13 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from common.database import init_db, engine, Base
-from common.models import Photo, Detection
+from common.models import Photo, Detection, Group, PhotoGroup
 
 if __name__ == "__main__":
     print("Initializing database tables...")
     print(f"Database URL: {engine.url}")
     init_db()
-    print("Database tables created successfully!")
-    print(f"Tables: {list(Base.metadata.tables.keys())}")
+    tables = list(Base.metadata.tables.keys())
+    print(f"Database tables created successfully! ({len(tables)} tables)")
+    for t in sorted(tables):
+        print(f"  - {t}")

@@ -163,6 +163,154 @@ def wait_for_detection(photo_id, max_wait=60):
         time.sleep(3)
 
 
+def test_groups_crud():
+    print("\n=== 测试 组别 CRUD ===")
+    try:
+        import requests
+    except ImportError:
+        print("请先安装 requests: pip install requests")
+        return
+
+    base = "http://localhost:8000/api/v1/groups"
+
+    groups_data = [
+        {"name": "黑熊出没区", "group_type": "area", "description": "疑似黑熊活动区域", "color": "#8B4513"},
+        {"name": "鹿群聚集点", "group_type": "area", "description": "常见鹿群区域", "color": "#228B22"},
+        {"name": "夜间红外照片", "group_type": "tag", "description": "红外相机夜间拍摄", "color": "#FF6347"},
+        {"name": "待人工复核", "group_type": "custom", "description": "需要人工确认的可疑照片", "color": "#FFD700"},
+    ]
+
+    created_ids = []
+    for gd in groups_data:
+        try:
+            resp = requests.post(base, json=gd, timeout=10)
+            if resp.status_code == 201:
+                g = resp.json()
+                created_ids.append(g["id"])
+                print(f"  创建组: id={g['id']}, name='{g['name']}', type={g['group_type']}, color={g['color']}")
+            elif resp.status_code == 409:
+                print(f"  跳过已存在: {gd['name']}")
+            else:
+                print(f"  创建失败 {gd['name']}: {resp.status_code} {resp.text}")
+        except requests.exceptions.ConnectionError:
+            print("无法连接到 Ingestion Service (端口 8000)")
+            return
+
+    print("\n  查询所有组别:")
+    try:
+        resp = requests.get(base, timeout=10)
+        if resp.status_code == 200:
+            groups = resp.json()
+            for g in groups:
+                print(f"    - [{g['group_type']}] {g['name']} (id={g['id']}, photos={g['photo_count']})")
+    except requests.exceptions.ConnectionError:
+        pass
+
+    return created_ids
+
+
+def test_batch_add_to_group(group_id=None, photo_ids=None):
+    print(f"\n=== 测试 批量添加照片到组 ===")
+    try:
+        import requests
+    except ImportError:
+        return
+
+    base = f"http://localhost:8000/api/v1/groups/{group_id}"
+
+    if photo_ids is None:
+        try:
+            resp = requests.get("http://localhost:8000/api/v1/photos?limit=20", timeout=10)
+            if resp.status_code == 200:
+                photos = resp.json()
+                photo_ids = [p["id"] for p in photos]
+        except requests.exceptions.ConnectionError:
+            print("无法连接到 Ingestion Service")
+            return
+
+    if not photo_ids:
+        print("没有可用的照片，请先上传一些")
+        return
+
+    print(f"  目标组ID: {group_id}, 待添加照片数: {len(photo_ids)}")
+    print(f"  照片ID列表: {photo_ids}")
+
+    try:
+        resp = requests.post(
+            f"{base}/photos/batch-add",
+            json={"photo_ids": photo_ids},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            result = resp.json()
+            print(f"  添加结果: 成功 {result['added_count']} 张, 跳过 {result['skipped_count']} 张")
+            if result["added_ids"]:
+                print(f"  成功添加的ID: {result['added_ids']}")
+        else:
+            print(f"  请求失败: {resp.status_code} {resp.text}")
+    except requests.exceptions.ConnectionError:
+        print("无法连接到 Ingestion Service")
+
+
+def test_filter_by_group(group_id):
+    print(f"\n=== 测试 按组别筛选照片 ===")
+    try:
+        import requests
+    except ImportError:
+        return
+
+    print(f"  只显示属于组ID={group_id}的照片:")
+    try:
+        resp = requests.get(
+            f"http://localhost:8000/api/v1/photos",
+            params={"group_id": group_id, "limit": 10},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            photos = resp.json()
+            print(f"  返回 {len(photos)} 张照片:")
+            for p in photos:
+                groups = p.get("groups", [])
+                group_names = ", ".join(g["name"] for g in groups)
+                print(f"    - photo#{p['id']} {p['filename']}  组别: [{group_names}]")
+    except requests.exceptions.ConnectionError:
+        print("无法连接到 Ingestion Service")
+
+    print(f"\n  排除组ID={group_id}的照片 (取反筛选):")
+    try:
+        resp = requests.get(
+            f"http://localhost:8000/api/v1/photos",
+            params={"exclude_group_id": group_id, "limit": 5},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            photos = resp.json()
+            print(f"  返回 {len(photos)} 张不在组内的照片")
+    except requests.exceptions.ConnectionError:
+        pass
+
+
+def test_groups_workflow():
+    print("\n" + "=" * 60)
+    print("CK2 区域分组 / 标签归堆 功能完整测试")
+    print("=" * 60)
+
+    pid1 = test_http_upload()
+    pid2 = test_base64_upload()
+    test_mqtt_publish()
+    time.sleep(1)
+
+    group_ids = test_groups_crud()
+    if group_ids:
+        target_group = group_ids[0]
+        test_batch_add_to_group(group_id=target_group)
+        test_filter_by_group(group_id=target_group)
+    else:
+        print("\n跳过分组测试（未能创建组别）")
+
+    query_stats()
+
+
 if __name__ == "__main__":
     print("CK2 空拍照片过滤系统 - 测试客户端")
     print("=" * 50)
@@ -182,6 +330,17 @@ if __name__ == "__main__":
                 wait_for_detection(int(sys.argv[2]))
             else:
                 print("用法: python test_client.py wait <photo_id>")
+        elif cmd == "groups":
+            test_groups_crud()
+        elif cmd == "add-to-group":
+            gid = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+            pids = [int(x) for x in sys.argv[3].split(",")] if len(sys.argv) > 3 else None
+            test_batch_add_to_group(gid, pids)
+        elif cmd == "filter-group":
+            gid = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+            test_filter_by_group(gid)
+        elif cmd == "group-test":
+            test_groups_workflow()
         elif cmd == "all":
             pid1 = test_http_upload()
             pid2 = test_base64_upload()
@@ -192,7 +351,14 @@ if __name__ == "__main__":
                 wait_for_detection(pid1)
         else:
             print(f"未知命令: {cmd}")
-            print("可用命令: upload | base64 | mqtt | stats | wait <id> | all")
+            print("可用命令:")
+            print("  upload | base64 | mqtt | stats")
+            print("  wait <photo_id>")
+            print("  groups              - 创建并查询组别")
+            print("  add-to-group <gid> <pid1,pid2,...>   - 批量添加照片到组")
+            print("  filter-group <gid>                    - 按组别筛选照片")
+            print("  group-test                           - 完整分组功能测试")
+            print("  all")
     else:
         pid1 = test_http_upload()
         pid2 = test_base64_upload()
